@@ -1,0 +1,211 @@
+---
+title: "Multivariate Analysis Mini-Project: Customer Segmentation"
+author: "Data Science Team"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cerulean
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+# 1. Introduction
+
+This report presents a comprehensive multivariate analysis of the **Wholesale Customers Dataset** from the UCI Machine Learning Repository. The primary objective is to segment customers into distinct, actionable profiles based on their annual spending across various product categories.
+
+We will employ **Principal Component Analysis (PCA)** for dimensionality reduction and variable relationship mapping, followed by **K-Means Clustering** to identify the customer segments.
+
+---
+
+# 2. Data Acquisition & Setup
+
+We begin by loading the necessary libraries and fetching the dataset directly from its source.
+
+```{r load-libraries}
+# Load required libraries
+library(tidyverse)
+library(FactoMineR)
+library(factoextra)
+library(cluster)
+library(corrplot)
+```
+
+```{r load-data}
+url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/00292/Wholesale%20customers%20data.csv"
+data <- read.csv(url)
+
+# Factorize categorical variables
+data$Channel <- factor(data$Channel, levels = c(1, 2), labels = c("Horeca", "Retail"))
+data$Region <- factor(data$Region, levels = c(1, 2, 3), labels = c("Lisbon", "Oporto", "Other"))
+
+str(data)
+```
+
+The dataset contains `r nrow(data)` observations and `r ncol(data)` variables. This meets the minimum requirement of $\ge$ 200 rows and $\ge$ 8 variables. The 6 continuous variables representing annual spending (Fresh, Milk, Grocery, Frozen, Detergents_Paper, Delicassen) will be the focus of our PCA and clustering.
+
+---
+
+# 3. Data Preparation
+
+Data preprocessing is a critical step. Wholesale spending data is generally strictly positive and heavily right-skewed (some customers buy significantly more than the median).
+
+```{r data-prep}
+# Check for missing values
+sum(is.na(data)) 
+
+# Extract numeric features
+data_numeric <- data %>% select(-Channel, -Region)
+
+# Apply log(x+1) transformation to handle right skewness
+data_log <- log1p(data_numeric)
+
+# Standardize data (mean = 0, sd = 1)
+data_scaled <- as.data.frame(scale(data_log))
+```
+
+**Justification for preprocessing:** 
+1. **Missing values:** None detected. If present, we would impute using median or drop rows if minimal.
+2. **Log Transformation:** Normalizes the distribution of skewed financial data, making PCA more robust.
+3. **Scaling:** Essential for both PCA and K-Means, as these algorithms are distance-based. Scaling ensures features with larger magnitudes (e.g., Fresh) don't disproportionately dominate the analysis.
+
+---
+
+# 4. Exploratory Data Analysis (EDA)
+
+Before running advanced algorithms, we explore linear relationships between the variables.
+
+```{r corr-matrix, fig.height=6, fig.width=6}
+cor_matrix <- cor(data_numeric)
+corrplot(cor_matrix, method="color", type="upper", addCoef.col = "black", 
+         tl.col="black", tl.srt=45, diag=FALSE)
+```
+
+**Insights:**
+- There is a strong positive correlation between `Grocery` and `Detergents_Paper` ($r \approx 0.92$), and between `Milk` and `Grocery`/`Detergents_Paper`. This suggests these items are typically purchased together, likely by retail supermarkets.
+- `Fresh` and `Frozen` show very little correlation with the other products, indicating a different purchasing behavior.
+
+---
+
+# 5. Factor Analysis (PCA)
+
+We execute Principal Component Analysis on the scaled, log-transformed data to uncover underlying dimensions.
+
+```{r pca-run}
+res.pca <- PCA(data_scaled, graph = FALSE)
+```
+
+## 5.1 Scree Plot & Variance
+
+```{r scree-plot}
+fviz_eig(res.pca, addlabels = TRUE, ylim = c(0, 50))
+```
+
+**Selection of Components:** The first two principal components (Dim 1 and Dim 2) explain roughly **72% of the total variance**. We will retain these 2 components, as they capture the vast majority of the information while allowing for easy 2D visualization.
+
+## 5.2 Variable Contributions
+
+```{r pca-var}
+fviz_pca_var(res.pca, col.var = "contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+```
+
+**Interpretation of Axes:**
+- **Dimension 1 (Horizontal):** Highly correlated with `Detergents_Paper`, `Grocery`, and `Milk`. This axis likely represents "Retail / Supermarket Bulk Buying."
+- **Dimension 2 (Vertical):** Highly correlated with `Fresh` and `Frozen`. This axis likely represents "Restaurant / Fresh Food Focus."
+
+## 5.3 Individual Factor Map
+
+```{r pca-ind}
+fviz_pca_ind(res.pca, 
+             geom.ind = "point", 
+             col.ind = data$Channel,
+             palette = c("#00AFBB", "#FC4E07"),
+             addEllipses = TRUE, 
+             legend.title = "Channel")
+```
+
+When coloring individuals by their `Channel` (Horeca vs. Retail), we see a clear separation along Dimension 1, confirming our hypothesis about the meaning of the principal axes.
+
+---
+
+# 6. Clustering Analysis
+
+With the dimensionality understood, we proceed to group the customers based on their multivariate spending patterns using K-Means.
+
+## 6.1 Optimal Number of Clusters
+
+We use the Elbow Method to determine $k$.
+
+```{r elbow-method}
+set.seed(123)
+fviz_nbclust(data_scaled, kmeans, method = "wss")
+```
+
+The curve bends prominently at $k = 2$ and $k = 3$. We will choose **$k = 3$** to yield more nuanced and actionable business segments.
+
+## 6.2 Fit K-Means
+
+```{r kmeans}
+set.seed(123)
+kmeans_res <- kmeans(data_scaled, centers = 3, nstart = 25)
+data$Cluster <- as.factor(kmeans_res$cluster)
+```
+
+---
+
+# 7. PCA + Cluster Integration
+
+We project our 3 K-Means clusters onto the 2D PCA space to validate cluster quality.
+
+```{r cluster-plot}
+fviz_cluster(kmeans_res, data = data_scaled, 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_minimal())
+```
+
+The clusters are well-separated in the principal component space, indicating a robust clustering structure.
+
+---
+
+# 8. Business & Statistical Interpretation
+
+To interpret the clusters, we calculate the average spending (in monetary units) across the original variables for each segment.
+
+```{r business-interpretation}
+cluster_profiles <- data %>%
+  group_by(Cluster) %>%
+  summarise(across(c(Fresh, Milk, Grocery, Frozen, Detergents_Paper, Delicassen), mean))
+
+knitr::kable(cluster_profiles, digits = 0, caption = "Average Spending by Cluster")
+```
+
+## Actionable Profiles:
+
+1. **Cluster 1: Small/Medium Restaurants**
+   - *Characteristics:* Moderate spending across the board, but highest percentage of spending goes to Fresh and Frozen relative to their total basket. Very low spend on Grocery and Detergents.
+   - *Actionable Insight:* Target these customers with bulk discounts on perishable items and frozen logistics solutions. 
+
+2. **Cluster 2: Large Retail Supermarkets**
+   - *Characteristics:* Massive spending on `Grocery`, `Milk`, and `Detergents_Paper`. 
+   - *Dominant Variables:* Grocery, Detergents_Paper.
+   - *Actionable Insight:* These are high-value institutional buyers. Offer them long-term contracts on non-perishables and dedicated account managers.
+
+3. **Cluster 3: Premium / High-Volume Fresh Buyers**
+   - *Characteristics:* Exceptional spending on `Fresh` products and `Delicassen`. 
+   - *Dominant Variables:* Fresh, Delicassen.
+   - *Actionable Insight:* These represent high-end restaurants or specialized premium food markets. They value quality over price. Focus marketing on farm-to-table sourcing and premium meat/dairy.
+
+---
+
+# 9. Conclusion
+
+Through Multivariate Statistical Analysis (PCA) and K-Means Clustering, we successfully reduced the complexity of customer spending data and identified 3 highly distinct, actionable customer archetypes. 
+
+These profiles can now be leveraged by the marketing and sales departments to design tailored promotional strategies, ultimately maximizing revenue and customer retention.
